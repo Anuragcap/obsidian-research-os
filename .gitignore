@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local OAuth credentials and per-user vault configuration.
+credentials.json
+token.json
+config.env

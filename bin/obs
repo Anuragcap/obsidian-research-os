@@ -1,0 +1,2654 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ================================================================
+# Obsidian Research OS
+# ================================================================
+
+VAULT_PATH="${OBSIDIAN_VAULT_PATH:-}"
+VAULT_NAME="${OBSIDIAN_VAULT_NAME:-}"
+
+# Commands/paths used to launch Obsidian. Override these in your shell profile
+# or the local config file if they don't match how Obsidian is installed.
+#
+# OBSIDIAN_CMD is the obsidian-cli tool used for every `obsidian ...`
+# call below — it's a thin client, NOT the app itself.
+#
+# OBSIDIAN_APP_CMD is the actual Obsidian desktop app launcher. It is blank by
+# default because `obsidian` normally refers to obsidian-cli, not the desktop
+# application. A desktop URI handler is used automatically when available.
+OBSIDIAN_CMD="${OBSIDIAN_CMD:-obsidian}"
+OBSIDIAN_APP_CMD="${OBSIDIAN_APP_CMD:-}"
+OBS_START_HOOK="${OBS_START_HOOK:-}"
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+BASE_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+
+# Load a user's vault configuration, if they have run `obs setup`.
+source "$BASE_DIR/lib/obs_config.sh"
+
+# ================================================================
+# Usage
+# ================================================================
+
+short_usage() {
+  cat <<'EOF'
+Obsidian Research OS
+
+  obs start                 Begin the day: note, tasks, focus timer
+  obs task add "…"          Add a task
+  obs task done NUMBER      Complete a numbered task
+  obs task delete NUMBER    Delete a numbered open task
+  obs index                 Refresh Daily and Paper note indexes
+  obs capture "…"           Save an idea to Inbox
+  obs inbox review          Triage captured notes
+  obs close                 Reflect and carry selected tasks forward
+
+  obs concept "…"           Create a concept note
+  obs paper import [PDF]    Add a paper and its concepts
+  obs skill …               Log chess, typing, or another skill
+
+  obs calendar today        See calendar + tasks
+  obs index                 Refresh Daily Notes.md and Paper Notes.md
+  obs review week           See a seven-day workflow summary
+  obs backup                Save the vault to Git
+
+More:  obs help paper | calendar | skills | all
+EOF
+}
+
+help() {
+  case "${1:-}" in
+    ""|main) short_usage ;;
+    paper|paper-add|paper-show)
+      cat <<'EOF'
+Paper workflow
+
+  obs paper new "Title"       Create a blank paper note
+  obs paper import [FILE.pdf]  Import a PDF; prompts when omitted
+  obs paper show               Search, confirm, and open a paper
+
+Important concepts are saved in Research/Concepts automatically.
+EOF
+      ;;
+    init)
+      echo "obs init — create the standard vault folders and missing templates."
+      ;;
+    today)
+      echo "obs today — open today's Daily note."
+      ;;
+    start|morning)
+      echo "obs start — recover overdue tasks, run the optional startup hook, open today's note, and show open tasks."
+      ;;
+    close)
+      cat <<'EOF'
+End-of-day close
+
+  obs close
+
+Shows open tasks, asks which task numbers to carry into tomorrow, then records
+a win, lesson, and tomorrow's first priority. Carried tasks are removed from
+today so no duplicate open work remains.
+EOF
+      ;;
+    task)
+      cat <<'EOF'
+Tasks
+
+  obs task add "Task text"
+  obs tasks                 # numbered open tasks
+  obs task done NUMBER
+  obs task delete NUMBER
+
+`obs task "Task text"` remains supported.
+EOF
+      ;;
+    tasks)
+      echo "obs tasks — list today's open tasks with numbers for 'obs task done NUMBER'."
+      ;;
+    index)
+      echo "obs index — refresh Daily Notes.md and Paper Notes.md from the notes in the vault."
+      ;;
+    capture)
+      echo 'obs capture "Idea" — create and open a timestamped Inbox note.'
+      ;;
+    inbox)
+      echo "obs inbox review — turn each Inbox note into a task or concept, archive it, or keep it."
+      ;;
+    review)
+      echo "obs review week — summarize the last seven days of tasks, research, inbox, reflections, and skill progress."
+      ;;
+    concept|research)
+      echo 'obs concept "Title" — create a Research/Concepts note from the research template.'
+      ;;
+    search)
+      echo 'obs search "Query" — search note names and contents through Obsidian.'
+      ;;
+    backup)
+      echo "obs backup — commit vault changes to Git and push when an origin remote exists."
+      ;;
+    calendar)
+      cat <<'EOF'
+Calendar workflow
+
+  obs calendar today
+  obs calendar sync [--date YYYY-MM-DD]
+  obs calendar add
+  obs calendar add "Title" "YYYY-MM-DD HH:MM" "YYYY-MM-DD HH:MM"
+  obs calendar delete EVENT_ID [--yes]
+
+Use `obs calendar add` for recurrence options interactively.
+EOF
+      ;;
+    skill|skills)
+      cat <<'EOF'
+Skill log
+
+  obs skill chess "What improved" [ELO]
+  obs skill typing WPM ACCURACY [MODE]
+  obs skill note "Skill" "What improved"
+
+Examples:
+  obs skill chess "Rook endgame activity" 1482
+  obs skill typing 92 98 60s
+EOF
+      ;;
+    all)
+      cat <<'EOF'
+All commands
+
+  obs init                    Set up vault folders and templates
+  obs today | start
+  obs close
+  obs task add "…"
+  obs task done NUMBER
+  obs task delete NUMBER
+  obs tasks
+  obs index
+  obs capture "…"
+  obs inbox review
+  obs concept "…"
+  obs paper new|import|show
+  obs skill chess|typing|note
+  obs search "…"
+  obs calendar today|sync|add|delete
+  obs review week
+  obs backup
+
+Aliases: morning, research, paper-add, paper-show.
+EOF
+      ;;
+    *)
+      echo "Usage: obs help [init|today|start|close|task|tasks|index|capture|inbox|concept|paper|skills|search|calendar|review|backup|all]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+usage() {
+  short_usage
+  return
+
+  cat <<'EOF'
+Usage:
+
+  obs init
+      Initialize the Obsidian Research OS folder structure.
+
+  obs today
+      Open/show today's Obsidian Daily note.
+
+  obs start
+      Open today's Daily note and list today's tasks.
+
+  obs task "task text"
+      Add a new unchecked task under the Tasks section of today's Daily note.
+
+  obs tasks
+      List today's tasks from the Daily note.
+
+  obs capture "text"
+      Capture a quick note or idea into the Inbox.
+
+  obs concept "title"
+      Create a research concept note.
+
+  obs paper new "title"
+      Create a new paper note.
+
+  obs paper import [FILE.pdf]
+      Import a PDF and create or update its research note. Without a path,
+      prompts for one.
+
+  obs paper show
+      Inspect an existing paper note.
+
+  obs search "query"
+      Search the Obsidian vault for matching notes and content.
+
+  obs calendar sync
+      Sync today's Google Calendar events into today's Daily note.
+
+  obs calendar sync --date YYYY-MM-DD
+      Sync Google Calendar events for a specific date.
+
+  obs calendar today
+      Show today's Google Calendar events and today's tasks.
+
+  obs calendar add
+      Interactively create a Google Calendar event, including repeat options.
+
+  obs calendar add "Title" "YYYY-MM-DD HH:MM" "YYYY-MM-DD HH:MM"
+      Create a Google Calendar event directly from the command line.
+
+      Interactive repeat options include:
+        - Every day
+        - Every week
+        - Every month
+        - Every year
+        - Every weekday
+        - Custom recurrence
+
+      Custom recurrence supports:
+        - Every N days
+        - Every N weeks
+        - Every N weeks on selected weekdays
+        - Every N months
+        - Every N years
+
+  obs calendar delete EVENT_ID [--yes]
+      Delete a Google Calendar event by its Google Calendar event ID.
+      Deleting a recurring event's series ID removes ALL occurrences;
+      you'll be asked to confirm unless --yes is passed.
+
+  obs backup
+      Create a backup of the Obsidian Research OS/vault data.
+
+Compatibility aliases: morning, research, paper-add, and paper-show continue to work.
+
+Notes:
+
+  Any command that talks to Obsidian will auto-launch the app first if
+  it isn't already running. Override the app launcher if needed:
+    OBSIDIAN_APP_CMD='/path/to/Obsidian.AppImage' obs today
+
+  `obs start` can optionally run a separate startup command:
+    OBS_START_HOOK='my-program --option' obs start
+
+EOF
+}
+
+# ================================================================
+# Vault checks
+# ================================================================
+
+require_vault() {
+  if [[ ! -d "$VAULT_PATH" ]]; then
+    echo
+    echo "ERROR: Obsidian vault not found:"
+    echo "  $VAULT_PATH"
+    echo
+    exit 1
+  fi
+}
+
+# ================================================================
+# Auto-launch supporting apps
+#
+# The Obsidian CLI requires the Obsidian app to already be running.
+# The desktop app launcher and CLI are deliberately kept separate so
+# installations where `obsidian` is CLI-only can still start correctly.
+# Optional application launchers should be added separately and should
+# not make the core workflow depend on another program.
+# ================================================================
+
+ensure_obsidian_running() {
+  if ! command -v "$OBSIDIAN_CMD" >/dev/null 2>&1; then
+    echo "ERROR: Obsidian CLI '$OBSIDIAN_CMD' was not found on PATH." >&2
+    echo "      Install/enable the Obsidian CLI, then try again." >&2
+    return 1
+  fi
+
+  # Do not launch another instance if the CLI can already reach the app.
+  if "$OBSIDIAN_CMD" version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ -n "${OBSIDIAN_APP_CMD:-}" ]]; then
+    echo "Starting Obsidian..."
+    nohup bash -lc "$OBSIDIAN_APP_CMD" >/dev/null 2>&1 &
+    disown
+  else
+    if ! command -v xdg-open >/dev/null 2>&1; then
+      echo "ERROR: xdg-open is required to auto-launch Obsidian." >&2
+      echo "      Set OBSIDIAN_APP_CMD to your Obsidian desktop launcher." >&2
+      return 1
+    fi
+
+    echo "Starting Obsidian..."
+    nohup xdg-open "obsidian://open" >/dev/null 2>&1 &
+    disown
+  fi
+
+  echo "Waiting for Obsidian to finish starting..."
+
+  local waited=0
+  while [[ $waited -lt 30 ]]; do
+    if "$OBSIDIAN_CMD" version >/dev/null 2>&1; then
+      return 0
+    fi
+
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  echo "ERROR: Obsidian did not become available to its CLI within 30 seconds." >&2
+  echo "      In Obsidian, enable Settings → General → Command line interface." >&2
+  echo "      Check that the desktop app is running, then try again." >&2
+  echo "      If Obsidian is installed in a non-standard way, set:" >&2
+  echo "        OBSIDIAN_APP_CMD='<your app launcher>'" >&2
+  return 1
+}
+
+run_start_hook() {
+  [[ -n "$OBS_START_HOOK" ]] || return 0
+  echo "Running startup hook..."
+  nohup bash -c "$OBS_START_HOOK" >/dev/null 2>&1 &
+  disown || true
+}
+
+# ================================================================
+# Initialize
+# ================================================================
+
+write_template_if_missing() {
+  local path="$1"
+  local content="$2"
+
+  if [[ -f "$path" ]]; then
+    return
+  fi
+
+  printf '%s' "$content" > "$path"
+  echo "  Created: ${path#"$VAULT_PATH/"}"
+}
+
+init() {
+  require_vault
+
+  mkdir -p \
+    "$VAULT_PATH/Daily" \
+    "$VAULT_PATH/Inbox" \
+    "$VAULT_PATH/Research/Concepts" \
+    "$VAULT_PATH/Research/Topics" \
+    "$VAULT_PATH/Research/Papers" \
+    "$VAULT_PATH/PDFs/Papers" \
+    "$VAULT_PATH/Templates" \
+    "$VAULT_PATH/99-System/calendar"
+
+  echo
+  echo "Initialized:"
+  echo "  $VAULT_PATH"
+  echo
+
+  echo "Templates:"
+
+  write_template_if_missing "$VAULT_PATH/Templates/Daily.md" '---
+type: daily
+date: {{date:YYYY-MM-DD}}
+---
+
+# {{date:dddd, D MMMM YYYY}}
+
+## Calendar
+
+<!-- CALENDAR:START -->
+<!-- CALENDAR:END -->
+
+## Tasks
+
+- [ ]
+
+## Research
+
+-
+
+## Notes
+
+-
+
+## Inbox / Ideas
+
+-
+
+## Skill Log
+
+### Chess
+
+### Typing
+
+### Other Skills
+
+## End of Day
+
+<!-- CLOSE:START -->
+### Reflection
+
+- Win:
+- Lesson:
+- Tomorrow’s first priority:
+
+### Carry Forward
+
+- 
+<!-- CLOSE:END -->
+'
+
+  write_template_if_missing "$VAULT_PATH/Templates/Research.md" '---
+type: research
+created: {{date:YYYY-MM-DD}}
+updated: {{date:YYYY-MM-DD}}
+tags:
+  -
+---
+
+# {{title}}
+
+## Question
+
+What am I trying to understand or decide?
+
+## Working answer
+
+## Key claims and evidence
+
+## My interpretation
+
+## Related Concepts
+
+<!-- Use: [[Research/Concepts/Concept name|Concept name]] -->
+- 
+
+## Related Papers
+
+<!-- Use: [[Research/Papers/Paper title|Paper title]] -->
+- 
+
+## Sources
+
+## Next action
+
+- [ ]
+'
+
+  write_template_if_missing "$VAULT_PATH/Templates/Paper.md" '---
+type: paper
+status: unread
+authors:
+year:
+venue:
+doi:
+relevance:
+contribution:
+project_use:
+limitations:
+created: {{date:YYYY-MM-DD}}
+pdf:
+---
+
+# {{title}}
+
+## Citation
+
+
+## Abstract
+
+
+## Problem
+
+
+## Main Contribution
+
+
+## What Can I Use This For?
+
+
+## Important Concepts
+
+<!-- Use: [[Research/Concepts/Concept name|Concept name]] -->
+- 
+
+## Limitations
+
+
+## Relevance
+
+
+## My Notes
+
+
+## PDF
+
+'
+
+  write_template_if_missing "$VAULT_PATH/Templates/Inbox.md" '---
+type: inbox
+created: {{date:YYYY-MM-DD}} {{time:HH:mm}}
+---
+
+# {{title}}
+
+{{content}}
+'
+
+  python3 "$BASE_DIR/vault_ops.py" index "$VAULT_PATH" --quiet
+  echo "Indexes:"
+  echo "  Daily Notes.md"
+  echo "  Paper Notes.md"
+
+  echo
+  echo "Configure Obsidian:"
+  echo "  Daily Notes folder: Daily"
+  echo "  Daily Notes template: Templates/Daily"
+  echo "  Templates folder: Templates"
+}
+
+# Keep the templates in one place: the repository copies them into a vault
+# only when that vault does not already have its own version.
+initialize_vault() {
+  require_vault
+
+  mkdir -p \
+    "$VAULT_PATH/Daily" \
+    "$VAULT_PATH/Inbox" \
+    "$VAULT_PATH/Research/Concepts" \
+    "$VAULT_PATH/Research/Topics" \
+    "$VAULT_PATH/Research/Papers" \
+    "$VAULT_PATH/PDFs/Papers" \
+    "$VAULT_PATH/Templates" \
+    "$VAULT_PATH/99-System/calendar"
+
+  echo "Initialized: $VAULT_PATH"
+  echo "Templates:"
+  local template
+  for template in Daily.md Research.md Paper.md Inbox.md; do
+    if [[ ! -f "$VAULT_PATH/Templates/$template" ]]; then
+      cp "$BASE_DIR/templates/$template" "$VAULT_PATH/Templates/$template"
+      echo "  Created: Templates/$template"
+    fi
+  done
+
+  python3 "$BASE_DIR/vault_ops.py" index "$VAULT_PATH" --quiet
+  echo "Indexes: Daily Notes.md, Paper Notes.md"
+  echo "In Obsidian, set the Templates folder to Templates and the Daily Notes template to Templates/Daily."
+}
+
+# ================================================================
+# Daily notes
+# ================================================================
+
+today() {
+  require_vault
+  ensure_obsidian_running
+  "$OBSIDIAN_CMD" vault="$VAULT_NAME" daily
+  python3 "$BASE_DIR/vault_ops.py" index "$VAULT_PATH" --kind daily --quiet
+}
+
+morning() {
+  require_vault
+  python3 "$BASE_DIR/vault_ops.py" recover-overdue "$VAULT_PATH"
+
+  run_start_hook
+  today
+
+  echo
+  echo "Today's tasks:"
+  tasks
+}
+
+rollover_tasks() {
+  require_vault
+  python3 "$BASE_DIR/vault_ops.py" rollover "$VAULT_PATH"
+}
+
+# ================================================================
+# Tasks
+# ================================================================
+
+task_add() {
+  local text="$*"
+
+  if [[ -z "$text" ]]; then
+    echo "ERROR: Task text required." >&2
+    exit 1
+  fi
+
+  # Collapse any embedded newlines so the task stays a single
+  # checklist line in the Daily note.
+  text="$(printf '%s' "$text" | tr '\n' ' ')"
+
+  require_vault
+
+  local daily_file
+  daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+
+  if [[ ! -f "$daily_file" ]]; then
+    echo "ERROR: Today's Daily note does not exist:"
+    echo "  $daily_file"
+    echo
+    echo "Run: obs today"
+    exit 1
+  fi
+
+  python3 "$BASE_DIR/vault_ops.py" task-add "$daily_file" "$text"
+  return
+
+  python3 - "$daily_file" "$text" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = sys.argv[2]
+content = path.read_text()
+
+marker = "## Tasks"
+if marker not in content:
+    raise SystemExit("ERROR: ## Tasks section not found in today's Daily note.")
+
+before, after = content.split(marker, 1)
+next_section = after.find("\n## ")
+
+if next_section == -1:
+    tasks_section = after
+    remainder = ""
+else:
+    tasks_section = after[:next_section]
+    remainder = after[next_section:]
+
+lines = tasks_section.splitlines()
+
+# Remove the empty template placeholder.
+cleaned = [line for line in lines if line.strip() != "- [ ]"]
+
+while cleaned and not cleaned[0].strip():
+    cleaned.pop(0)
+
+tasks_body = "\n".join(cleaned).rstrip()
+if tasks_body:
+    tasks_body += "\n"
+
+tasks_body += f"- [ ] {text}\n"
+
+path.write_text(before + marker + "\n\n" + tasks_body + remainder)
+PY
+
+  echo "Added task to today's Daily note."
+}
+
+tasks() {
+  require_vault
+
+  local daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+  if [[ ! -f "$daily_file" ]]; then
+    echo "No Daily note for today. Run: obs today"
+    return
+  fi
+
+  python3 "$BASE_DIR/vault_ops.py" task-list "$daily_file"
+  return
+
+  python3 - "$daily_file" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+content = Path(sys.argv[1]).read_text()
+match = re.search(r"^## Tasks\s*$([\s\S]*?)(?=^## |\Z)", content, re.M)
+open_tasks = [] if not match else [
+    line.strip()[6:]
+    for line in match.group(1).splitlines()
+    if line.strip().startswith("- [ ] ")
+]
+
+if not open_tasks:
+    print("No open tasks for today.")
+else:
+    print("Today's open tasks:")
+    for number, task in enumerate(open_tasks, 1):
+        print(f"  {number}. {task}")
+PY
+}
+
+task_next() {
+  require_vault
+  local daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+  if [[ ! -f "$daily_file" ]]; then
+    echo "No Daily note for today. Run: obs today"
+    return
+  fi
+  python3 "$BASE_DIR/vault_ops.py" task-next "$daily_file"
+}
+
+task_due() {
+  if [[ $# -lt 2 ]]; then
+    echo 'Usage: obs task due YYYY-MM-DD "Task text"' >&2
+    exit 1
+  fi
+  require_vault
+  local due="$1"
+  shift
+  local daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+  if [[ ! -f "$daily_file" ]]; then
+    echo "No Daily note for today. Run: obs today" >&2
+    exit 1
+  fi
+  python3 "$BASE_DIR/vault_ops.py" task-due "$daily_file" "$due" "$*"
+}
+
+task_done() {
+  if [[ $# -ne 1 ]]; then
+    echo "Usage: obs task done NUMBER" >&2
+    exit 1
+  fi
+
+  local number="${1:-}"
+  if [[ ! "$number" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Usage: obs task done NUMBER" >&2
+    echo "Run 'obs tasks' to see task numbers." >&2
+    exit 1
+  fi
+
+  require_vault
+  local daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+  if [[ ! -f "$daily_file" ]]; then
+    echo "No Daily note for today. Run: obs today" >&2
+    exit 1
+  fi
+
+  python3 "$BASE_DIR/vault_ops.py" task-done "$daily_file" "$number"
+  return
+
+  python3 - "$daily_file" "$number" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+number = int(sys.argv[2])
+content = path.read_text()
+match = re.search(r"^## Tasks\s*$([\s\S]*?)(?=^## |\Z)", content, re.M)
+if not match:
+    raise SystemExit("ERROR: ## Tasks section not found in today's Daily note.")
+
+section = match.group(1)
+open_positions = [m.start() for m in re.finditer(r"(?m)^- \[ \] ", section)]
+if number > len(open_positions):
+    raise SystemExit(f"ERROR: Task {number} does not exist. Run 'obs tasks' to see open tasks.")
+
+position = match.start(1) + open_positions[number - 1]
+updated = content[:position] + "- [x] " + content[position + 6:]
+path.write_text(updated)
+print(f"Completed task {number}.")
+PY
+}
+
+task_delete() {
+  if [[ $# -ne 1 ]]; then
+    echo "Usage: obs task delete NUMBER" >&2
+    exit 1
+  fi
+
+  local number="${1:-}"
+  if [[ ! "$number" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Usage: obs task delete NUMBER" >&2
+    echo "Run 'obs tasks' to see task numbers." >&2
+    exit 1
+  fi
+
+  require_vault
+  local daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+  if [[ ! -f "$daily_file" ]]; then
+    echo "No Daily note for today. Run: obs today" >&2
+    exit 1
+  fi
+
+  python3 "$BASE_DIR/vault_ops.py" task-delete "$daily_file" "$number"
+}
+
+task_command() {
+  case "${1:-}" in
+    add)
+      shift
+      task_add "$@"
+      ;;
+    done)
+      shift
+      task_done "$@"
+      ;;
+    delete|remove)
+      shift
+      task_delete "$@"
+      ;;
+    next)
+      shift
+      if [[ $# -ne 0 ]]; then
+        echo "Usage: obs task next" >&2
+        exit 1
+      fi
+      task_next
+      ;;
+    due)
+      shift
+      task_due "$@"
+      ;;
+    list|"")
+      if [[ "${1:-}" == "list" ]]; then shift; fi
+      if [[ $# -ne 0 ]]; then
+        echo "Usage: obs task [add TEXT|done NUMBER|delete NUMBER|list]" >&2
+        exit 1
+      fi
+      tasks
+      ;;
+    *)
+      # Compatibility: obs task "Buy groceries"
+      task_add "$@"
+      ;;
+  esac
+}
+
+# ================================================================
+# End-of-day close
+# ================================================================
+
+close_day() {
+  require_vault
+
+  local daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+  if [[ ! -f "$daily_file" ]]; then
+    echo "No Daily note for today. Run: obs today" >&2
+    exit 1
+  fi
+
+  echo
+  tasks
+  echo
+
+  local carry
+  local win
+  local lesson
+  local priority
+  read -r -p "Carry forward [all | 1,3 | Enter for none]: " carry
+  read -r -p "Win (optional): " win
+  read -r -p "Lesson (optional): " lesson
+  read -r -p "Tomorrow's first priority (optional): " priority
+
+  python3 - "$daily_file" "$carry" "$win" "$lesson" "$priority" <<'PY'
+from datetime import date, timedelta
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+selection, win, lesson, priority = sys.argv[2:]
+text = path.read_text()
+
+task_match = re.search(r"^## Tasks\s*$([\s\S]*?)(?=^## |\Z)", text, re.M)
+if not task_match:
+    raise SystemExit("ERROR: ## Tasks section not found in today's Daily note.")
+
+task_lines = task_match.group(1).splitlines(keepends=True)
+open_tasks = sorted(
+    [(index, line[6:].strip()) for index, line in enumerate(task_lines, 1) if line.startswith("- [ ] ")],
+    key=lambda item: (not item[1].startswith("!"), item[0]),
+)
+
+if not selection.strip():
+    selected_numbers = set()
+elif selection.strip().lower() == "all":
+    selected_numbers = set(range(1, len(open_tasks) + 1))
+else:
+    try:
+        selected_numbers = {int(value.strip()) for value in selection.split(",")}
+    except ValueError:
+        raise SystemExit("ERROR: Use 'all' or task numbers separated by commas, for example: 1,3")
+    if not selected_numbers or any(number < 1 or number > len(open_tasks) for number in selected_numbers):
+        raise SystemExit("ERROR: One or more task numbers are invalid. Run 'obs tasks' and try again.")
+
+carried = [task for number, (_, task) in enumerate(open_tasks, 1) if number in selected_numbers]
+selected_line_numbers = {open_tasks[number - 1][0] for number in selected_numbers}
+
+# Preserve the record of tasks already carried if the close ritual is revised.
+previous_carried = []
+previous = re.search(
+    r"<!-- CLOSE:START -->.*?^### Carry Forward\s*$\n\n(.*?)(?=^<!-- CLOSE:END -->)",
+    text,
+    re.M | re.S,
+)
+if previous:
+    previous_carried = [
+        line[2:].strip()
+        for line in previous.group(1).splitlines()
+        if line.startswith("- ") and line[2:].strip() not in ("", "None")
+    ]
+logged_carried = list(dict.fromkeys(previous_carried + carried))
+
+# Remove carried tasks from today so they are not left as duplicate open work.
+if carried:
+    rebuilt = []
+    for line_number, line in enumerate(task_lines, 1):
+        if line_number in selected_line_numbers:
+            continue
+        rebuilt.append(line)
+    section = "".join(rebuilt)
+    text = text[:task_match.start(1)] + section + text[task_match.end(1):]
+
+def close_block():
+    carry_lines = "\n".join(f"- {task}" for task in logged_carried) or "- None"
+    return (
+        "<!-- CLOSE:START -->\n"
+        "### Reflection\n\n"
+        f"- Win: {win or '—'}\n"
+        f"- Lesson: {lesson or '—'}\n"
+        f"- Tomorrow's first priority: {priority or '—'}\n\n"
+        "### Carry Forward\n\n"
+        f"{carry_lines}\n"
+        "<!-- CLOSE:END -->"
+    )
+
+block = close_block()
+marker_pattern = r"<!-- CLOSE:START -->.*?<!-- CLOSE:END -->"
+if re.search(marker_pattern, text, re.S):
+    text = re.sub(marker_pattern, block, text, count=1, flags=re.S)
+elif re.search(r"^## End of Day\s*$", text, re.M):
+    text = re.sub(r"^## End of Day\s*$", "## End of Day\n\n" + block, text, count=1, flags=re.M)
+else:
+    text = text.rstrip() + "\n\n## End of Day\n\n" + block + "\n"
+
+path.write_text(text)
+
+if carried:
+    tomorrow = date.today() + timedelta(days=1)
+    tomorrow_path = path.parent / f"{tomorrow:%Y-%m-%d}.md"
+    if tomorrow_path.exists():
+        tomorrow_text = tomorrow_path.read_text()
+    else:
+        tomorrow_text = f"""---
+type: daily
+date: {tomorrow:%Y-%m-%d}
+---
+
+# {tomorrow:%A}, {tomorrow.day} {tomorrow:%B} {tomorrow:%Y}
+
+## Calendar
+
+<!-- CALENDAR:START -->
+<!-- CALENDAR:END -->
+
+## Tasks
+
+- [ ]
+
+## Research
+
+-
+
+## Notes
+
+-
+
+## Inbox / Ideas
+
+-
+
+## Skill Log
+
+### Chess
+
+### Typing
+
+### Other Skills
+
+## End of Day
+
+<!-- CLOSE:START -->
+### Reflection
+
+- Win:
+- Lesson:
+- Tomorrow's first priority:
+
+### Carry Forward
+
+-
+<!-- CLOSE:END -->
+"""
+
+    next_tasks = re.search(r"^## Tasks\s*$([\s\S]*?)(?=^## |\Z)", tomorrow_text, re.M)
+    if not next_tasks:
+        raise SystemExit("ERROR: ## Tasks section not found in tomorrow's Daily note.")
+    section = next_tasks.group(1)
+    section = "\n".join(line for line in section.splitlines() if line.strip() != "- [ ]").strip()
+    additions = "\n".join(f"- [ ] {task}" for task in carried)
+    section = (section + "\n" if section else "\n") + additions + "\n"
+    tomorrow_text = tomorrow_text[:next_tasks.start(1)] + section + tomorrow_text[next_tasks.end(1):]
+    tomorrow_path.write_text(tomorrow_text)
+    print(f"Carried {len(carried)} task(s) into {tomorrow_path.name}.")
+
+print("Closed today's Daily note.")
+PY
+}
+
+# ================================================================
+# Skill log
+# ================================================================
+
+append_skill_entry() {
+  local heading="$1"
+  local entry="$2"
+  local daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+
+  if [[ ! -f "$daily_file" ]]; then
+    echo "No Daily note for today. Run: obs today" >&2
+    exit 1
+  fi
+
+  python3 "$BASE_DIR/vault_ops.py" skill "$daily_file" "$heading" "$entry"
+  return
+
+  python3 - "$daily_file" "$heading" "$entry" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+heading = sys.argv[2]
+entry = sys.argv[3]
+text = path.read_text()
+
+if not re.search(r"^## Skill Log\s*$", text, re.M):
+    insert = "\n\n## Skill Log\n\n### Chess\n\n### Typing\n\n### Other Skills\n"
+    end = re.search(r"^## End of Day\s*$", text, re.M)
+    text = text[:end.start()] + insert + "\n" + text[end.start():] if end else text.rstrip() + insert
+
+pattern = rf"^{re.escape(heading)}\s*$"
+match = re.search(pattern, text, re.M)
+if not match:
+    raise SystemExit(f"ERROR: {heading} section not found in today's Daily note.")
+
+next_heading = re.search(r"^#{2,3} ", text[match.end():], re.M)
+position = match.end() + (next_heading.start() if next_heading else len(text[match.end():]))
+text = text[:position].rstrip() + f"\n- {entry}\n\n" + text[position:].lstrip("\n")
+path.write_text(text)
+PY
+}
+
+skill() {
+  require_vault
+
+  case "${1:-}" in
+    chess)
+      shift
+      local lesson="${1:-}"
+      local elo="${2:-}"
+      if [[ -z "$lesson" ]]; then
+        echo 'Usage: obs skill chess "What improved" [ELO]' >&2
+        exit 1
+      fi
+      local chess_entry="Knowledge: $lesson"
+      [[ -n "$elo" ]] && chess_entry+=" | ELO: $elo"
+      append_skill_entry "### Chess" "$chess_entry"
+      ;;
+    typing)
+      shift
+      local wpm="${1:-}"
+      local accuracy="${2:-}"
+      local mode="${3:-60s}"
+      if [[ ! "$wpm" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ ! "$accuracy" =~ ^[0-9]+([.][0-9]+)?%?$ ]]; then
+        echo 'Usage: obs skill typing WPM ACCURACY [MODE]' >&2
+        echo 'Example: obs skill typing 92 98 60s' >&2
+        exit 1
+      fi
+      accuracy="${accuracy%%%}"
+      append_skill_entry "### Typing" "Monkeytype ($mode): $wpm WPM | $accuracy% accuracy"
+      ;;
+    note)
+      shift
+      local skill_name="${1:-}"
+      local note="${2:-}"
+      if [[ -z "$skill_name" || -z "$note" ]]; then
+        echo 'Usage: obs skill note "Skill" "What improved"' >&2
+        exit 1
+      fi
+      append_skill_entry "### Other Skills" "$skill_name: $note"
+      ;;
+    *)
+      cat <<'EOF'
+Usage:
+  obs skill chess "What improved" [ELO]
+  obs skill typing WPM ACCURACY [MODE]
+  obs skill note "Skill" "What improved"
+EOF
+      exit 1
+      ;;
+  esac
+}
+
+# ================================================================
+# Inbox capture
+# ================================================================
+
+capture() {
+  require_vault
+  ensure_obsidian_running
+
+  local text="$*"
+
+  if [[ -z "$text" ]]; then
+    echo "ERROR: Capture text required." >&2
+    exit 1
+  fi
+
+  local title
+
+  title="$(
+    printf '%s' "$text" |
+      tr '[:space:]' '-' |
+      tr -cd '[:alnum:]_-' |
+      tr -s '-'
+  )"
+
+  # Cap the slug length so long captures can't produce filenames
+  # that exceed filesystem limits, then trim a trailing dash left
+  # over from truncation.
+  title="${title:0:60}"
+  title="${title%-}"
+
+  if [[ -z "$title" ]]; then
+    title="capture"
+  fi
+
+  "$OBSIDIAN_CMD" vault="$VAULT_NAME" \
+    create \
+    path="Inbox/$(date +%Y-%m-%d-%H%M%S)-$title.md" \
+    template=Inbox \
+    content="$text" \
+    open
+}
+
+inbox() {
+  if [[ "${1:-}" != "review" || $# -ne 1 ]]; then
+    echo "Usage: obs inbox review" >&2
+    exit 1
+  fi
+
+  require_vault
+  local inbox_dir="$VAULT_PATH/Inbox"
+  local archive_dir="$inbox_dir/Archive"
+  local -a notes=()
+  mapfile -t notes < <(find "$inbox_dir" -maxdepth 1 -type f -name '*.md' -print | sort)
+
+  if [[ ${#notes[@]} -eq 0 ]]; then
+    echo "Inbox is clear."
+    return
+  fi
+
+  mkdir -p "$archive_dir"
+  local note title action
+  for note in "${notes[@]}"; do
+    title="$(sed -n 's/^# //p' "$note" | head -n 1)"
+    title="${title:-$(basename "$note" .md)}"
+    echo
+    echo "Inbox: $title"
+    read -r -p "[t]ask, [c]oncept, [a]rchive, [k]eep, [q]uit: " action
+    case "${action,,}" in
+      t)
+        task_add "$title"
+        mv "$note" "$archive_dir/"
+        ;;
+      c)
+        research "$title"
+        mv "$note" "$archive_dir/"
+        ;;
+      a)
+        mv "$note" "$archive_dir/"
+        ;;
+      k|"") ;;
+      q) break ;;
+      *) echo "Kept; choose it again next review." ;;
+    esac
+  done
+}
+
+# ================================================================
+# Research notes
+# ================================================================
+
+research() {
+  require_vault
+  ensure_obsidian_running
+
+  local title="$*"
+
+  if [[ -z "$title" ]]; then
+    echo "ERROR: Research title required." >&2
+    exit 1
+  fi
+
+  local safe_title
+  safe_title="$(sanitize_filename "$title" "research-$(date +%Y-%m-%d-%H%M%S)")"
+
+  "$OBSIDIAN_CMD" vault="$VAULT_NAME" \
+    create \
+    path="Research/Concepts/$safe_title.md" \
+    template=Research \
+    open
+}
+
+# ================================================================
+# Manual paper note
+# ================================================================
+
+paper() {
+  require_vault
+  ensure_obsidian_running
+
+  local title="$*"
+
+  if [[ -z "$title" ]]; then
+    echo "ERROR: Paper title required." >&2
+    exit 1
+  fi
+
+  local safe_title
+  safe_title="$(sanitize_filename "$title" "paper-$(date +%Y-%m-%d-%H%M%S)")"
+
+  "$OBSIDIAN_CMD" vault="$VAULT_NAME" \
+    create \
+    path="Research/Papers/$safe_title.md" \
+    template=Paper \
+    open
+  python3 "$BASE_DIR/vault_ops.py" index "$VAULT_PATH" --kind papers --quiet
+}
+
+# ================================================================
+# Read a frontmatter value
+# ================================================================
+
+get_frontmatter_value() {
+  local file="$1"
+  local key="$2"
+
+  awk -v key="$key" '
+    BEGIN {
+      in_frontmatter=0
+    }
+
+    /^---$/ {
+      if (in_frontmatter == 0) {
+        in_frontmatter=1
+      } else {
+        exit
+      }
+      next
+    }
+
+    in_frontmatter == 1 {
+
+      prefix = key ":"
+
+      if (index($0, prefix) == 1) {
+
+        value = substr($0, length(prefix) + 1)
+
+        gsub(/^[[:space:]]+/, "", value)
+        gsub(/[[:space:]]+$/, "", value)
+
+        if (value ~ /^".*"$/) {
+          value = substr(value, 2, length(value) - 2)
+
+          # Reverse the escaping done by yaml_escape, in the opposite
+          # order it was applied, so values round-trip cleanly instead
+          # of accumulating extra backslashes on every re-save.
+          gsub(/\\"/, "\"", value)
+          gsub(/\\\\/, "\\", value)
+        }
+
+        print value
+        exit
+      }
+    }
+  ' "$file"
+}
+
+# ================================================================
+# Read a Markdown section
+# ================================================================
+
+get_section() {
+  local file="$1"
+  local heading="$2"
+
+  awk -v heading="$heading" '
+    $0 == heading {
+      found=1
+      next
+    }
+
+    found && /^## / {
+      exit
+    }
+
+    found {
+      print
+    }
+  ' "$file" |
+    sed '/^[[:space:]]*$/d' |
+    sed 's/[[:space:]]*$//'
+}
+
+# ================================================================
+# Sanitize a title into a safe filename
+#
+# Strips characters that are unsafe or ambiguous in filesystem
+# paths (e.g. "/" would otherwise be read as a subdirectory).
+# ================================================================
+
+sanitize_filename() {
+  local input="$1"
+  local fallback="$2"
+  local safe
+
+  safe="$(
+    printf '%s' "$input" |
+      sed 's/[\/:*?"<>|]/-/g' |
+      tr -s '[:space:]' ' ' |
+      sed 's/^ *//;s/ *$//'
+  )"
+
+  if [[ -z "$safe" ]]; then
+    safe="$fallback"
+  fi
+
+  printf '%s' "$safe"
+}
+
+# ================================================================
+# Ask question with previous value
+#
+# Enter = keep previous value
+# New text = replace previous value
+# ================================================================
+
+ask_with_previous() {
+  local question="$1"
+  local previous="$2"
+  local answer
+
+  if [[ -n "$previous" ]]; then
+
+    read -r -p "$question [Previous: $previous]: " answer
+
+    if [[ -z "$answer" ]]; then
+      answer="$previous"
+    fi
+
+  else
+
+    read -r -p "$question " answer
+
+  fi
+
+  printf '%s' "$answer"
+}
+
+# ================================================================
+# Show existing paper
+#
+# Usage:
+#
+#   obs paper-show
+#
+# Then enter:
+#
+#   nym-whitepaper
+#
+# or:
+#
+#   ~/Downloads/a-paper.pdf
+# ================================================================
+
+paper_show() {
+
+  require_vault
+  ensure_obsidian_running
+
+  echo
+  echo "=============================================================="
+  echo "                     PAPER INFORMATION"
+  echo "=============================================================="
+  echo
+
+  read -r -p "Search paper title (Enter to list all): " input
+
+  input="${input/#\~/$HOME}"
+  input="${input#\"}"
+  input="${input%\"}"
+
+  if [[ -z "$input" ]]; then
+    input=""
+  fi
+
+  local note=""
+
+  local -a matches=()
+  mapfile -t matches < <(
+    find "$VAULT_PATH/Research/Papers" \
+      -maxdepth 1 \
+      -type f \
+      -iname "*${input}*.md" \
+      -print | sort -f
+  )
+
+  if [[ ${#matches[@]} -eq 0 ]]; then
+    echo "No papers match: ${input:-all papers}" >&2
+    return 1
+  fi
+
+  echo
+  echo "Matching papers:"
+  local index
+  for index in "${!matches[@]}"; do
+    printf '  %d. %s\n' "$((index + 1))" "$(basename "${matches[$index]}" .md)"
+  done
+
+  local choice
+  read -r -p "Open number [1] (q to cancel): " choice
+  choice="${choice:-1}"
+  if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+    echo "Cancelled."
+    return
+  fi
+  if [[ ! "$choice" =~ ^[1-9][0-9]*$ ]] || (( choice > ${#matches[@]} )); then
+    echo "Invalid paper number." >&2
+    return 1
+  fi
+
+  note="${matches[$((choice - 1))]}"
+  "$OBSIDIAN_CMD" vault="$VAULT_NAME" \
+    open path="Research/Papers/$(basename "$note")" \
+    >/dev/null 2>&1 || true
+
+  # --------------------------------------------------------------
+  # If a PDF path was supplied
+  # --------------------------------------------------------------
+
+  if [[ -f "$input" ]]; then
+
+    local filename
+    local stem
+
+    filename="$(basename "$input")"
+    stem="${filename%.*}"
+
+    if [[ -f "$VAULT_PATH/Research/Papers/$stem.md" ]]; then
+      note="$VAULT_PATH/Research/Papers/$stem.md"
+    fi
+
+  else
+
+    # ------------------------------------------------------------
+    # Otherwise treat it as paper name
+    # ------------------------------------------------------------
+
+    if [[ -f "$VAULT_PATH/Research/Papers/$input.md" ]]; then
+      note="$VAULT_PATH/Research/Papers/$input.md"
+    fi
+
+  fi
+
+  # --------------------------------------------------------------
+  # If exact match wasn't found, search
+  # --------------------------------------------------------------
+
+  if [[ -z "$note" ]]; then
+
+    local matches
+
+    matches="$(
+      find "$VAULT_PATH/Research/Papers" \
+        -maxdepth 1 \
+        -type f \
+        -iname "*${input}*.md" \
+        -print
+    )"
+
+    if [[ -z "$matches" ]]; then
+      echo
+      echo "Paper not found:"
+      echo "  $input"
+      echo
+      return 1
+    fi
+
+    local count
+
+    count="$(printf '%s\n' "$matches" | wc -l)"
+
+    if [[ "$count" -gt 1 ]]; then
+
+      echo
+      echo "Multiple papers found:"
+      echo
+
+      while IFS= read -r file; do
+        echo "  $(basename "$file" .md)"
+      done <<< "$matches"
+
+      echo
+      echo "Run the command again using the exact paper name."
+      echo
+
+      return 1
+    fi
+
+    note="$matches"
+
+  fi
+
+  # --------------------------------------------------------------
+  # Read values
+  # --------------------------------------------------------------
+
+  local title
+  local authors
+  local year
+  local venue
+  local doi
+  local relevance
+  local contribution
+  local project_use
+  local limitations
+  local problem
+  local concepts
+  local pdf
+
+  title="$(
+    sed -n 's/^# //p' "$note" |
+      head -n 1
+  )"
+
+  authors="$(get_frontmatter_value "$note" "authors")"
+  year="$(get_frontmatter_value "$note" "year")"
+  venue="$(get_frontmatter_value "$note" "venue")"
+  doi="$(get_frontmatter_value "$note" "doi")"
+  relevance="$(get_frontmatter_value "$note" "relevance")"
+  contribution="$(get_frontmatter_value "$note" "contribution")"
+  project_use="$(get_frontmatter_value "$note" "project_use")"
+  limitations="$(get_frontmatter_value "$note" "limitations")"
+
+  problem="$(get_section "$note" "## Problem")"
+
+  concepts="$(
+    awk '
+      /^## Important Concepts/ {
+        found=1
+        next
+      }
+
+      found && /^## / {
+        exit
+      }
+
+      found && /^- \[\[/ {
+
+        line=$0
+
+        sub(/^- \[\[/, "", line)
+        sub(/\]\]$/, "", line)
+
+        if (concepts != "") {
+          concepts=concepts ", "
+        }
+
+        concepts=concepts line
+      }
+
+      END {
+        print concepts
+      }
+    ' "$note"
+  )"
+
+  pdf="$(get_frontmatter_value "$note" "pdf")"
+
+  # --------------------------------------------------------------
+  # Display
+  # --------------------------------------------------------------
+
+  echo "Title:"
+  echo "${title:--}"
+  echo
+
+  echo "Authors:"
+  echo "${authors:--}"
+  echo
+
+  echo "Year:"
+  echo "${year:--}"
+  echo
+
+  echo "Venue / journal / conference:"
+  echo "${venue:--}"
+  echo
+
+  echo "DOI:"
+  echo "${doi:--}"
+  echo
+
+  echo "Problem:"
+  echo "${problem:--}"
+  echo
+
+  echo "Main Contribution:"
+  echo "${contribution:--}"
+  echo
+
+  echo "What Can I Use This For?"
+  echo "${project_use:--}"
+  echo
+
+  echo "Important Concepts:"
+  if [[ -n "$concepts" ]]; then
+    echo "$concepts" |
+      tr ',' '\n' |
+      sed 's/^[[:space:]]*/- /'
+  else
+    echo "-"
+  fi
+  echo
+
+  echo "Limitations:"
+  echo "${limitations:--}"
+  echo
+
+  echo "Relevance:"
+  echo "${relevance:--}"
+  echo
+
+  echo "PDF:"
+  echo "${pdf:--}"
+  echo
+
+  echo "Note:"
+  echo "Research/Papers/$(basename "$note")"
+
+  echo
+  echo "=============================================================="
+}
+
+# ================================================================
+# Interactive paper intake
+# ================================================================
+
+paper_add() {
+
+  require_vault
+  ensure_obsidian_running
+
+  echo
+  echo "=============================================================="
+  echo "                    PAPER RESEARCH INTAKE"
+  echo "=============================================================="
+  echo
+
+  # --------------------------------------------------------------
+  # PDF
+  # --------------------------------------------------------------
+
+  local source="${1:-}"
+
+  if [[ -z "$source" ]]; then
+    read -r -p "Path to paper/PDF: " source
+  fi
+
+  source="${source/#\~/$HOME}"
+  source="${source#\"}"
+  source="${source%\"}"
+
+  if [[ ! -f "$source" ]]; then
+    echo
+    echo "ERROR: PDF not found:"
+    echo "  $source"
+    echo
+    exit 1
+  fi
+
+  case "${source,,}" in
+    *.pdf)
+      ;;
+    *)
+      echo
+      echo "ERROR: The file must be a PDF."
+      echo
+      exit 1
+      ;;
+  esac
+
+  local filename
+  local original_stem
+
+  filename="$(basename "$source")"
+  original_stem="${filename%.*}"
+
+  # --------------------------------------------------------------
+  # Locate existing note
+  # --------------------------------------------------------------
+
+  local existing_note=""
+
+  if [[ -f "$VAULT_PATH/Research/Papers/$original_stem.md" ]]; then
+    existing_note="$VAULT_PATH/Research/Papers/$original_stem.md"
+  fi
+
+  # --------------------------------------------------------------
+  # Previous values
+  # --------------------------------------------------------------
+
+  local old_title=""
+  local old_authors=""
+  local old_year=""
+  local old_venue=""
+  local old_doi=""
+  local old_relevance=""
+  local old_contribution=""
+  local old_project_use=""
+  local old_limitations=""
+  local old_problem=""
+  local old_concepts=""
+
+  if [[ -n "$existing_note" ]]; then
+
+    echo
+    echo "Existing paper found:"
+    echo "  Research/Papers/$original_stem.md"
+    echo
+    echo "Previous values are shown in brackets."
+    echo "Press Enter to keep a previous value."
+    echo "Type a new value to replace it."
+    echo
+
+    old_title="$(
+      sed -n 's/^# //p' "$existing_note" |
+        head -n 1
+    )"
+
+    old_authors="$(
+      get_frontmatter_value "$existing_note" "authors"
+    )"
+
+    old_year="$(
+      get_frontmatter_value "$existing_note" "year"
+    )"
+
+    old_venue="$(
+      get_frontmatter_value "$existing_note" "venue"
+    )"
+
+    old_doi="$(
+      get_frontmatter_value "$existing_note" "doi"
+    )"
+
+    old_relevance="$(
+      get_frontmatter_value "$existing_note" "relevance"
+    )"
+
+    old_contribution="$(
+      get_frontmatter_value "$existing_note" "contribution"
+    )"
+
+    old_project_use="$(
+      get_frontmatter_value "$existing_note" "project_use"
+    )"
+
+    old_limitations="$(
+      get_frontmatter_value "$existing_note" "limitations"
+    )"
+
+    old_problem="$(
+      get_section "$existing_note" "## Problem"
+    )"
+
+    old_concepts="$(
+      awk '
+        /^## Important Concepts/ {
+          found=1
+          next
+        }
+
+        found && /^## / {
+          exit
+        }
+
+        found && /^- \[\[/ {
+
+          line=$0
+
+          sub(/^- \[\[/, "", line)
+          sub(/\]\]$/, "", line)
+
+          if (concepts != "") {
+            concepts=concepts ", "
+          }
+
+          concepts=concepts line
+        }
+
+        END {
+          print concepts
+        }
+      ' "$existing_note"
+    )"
+
+  fi
+
+  # --------------------------------------------------------------
+  # Bibliographic questions
+  # --------------------------------------------------------------
+
+  local title
+  local authors
+  local paper_year
+  local venue
+  local doi
+
+  title="$(
+    ask_with_previous \
+      "Paper title [$original_stem]:" \
+      "$old_title"
+  )"
+
+  if [[ -z "$title" ]]; then
+    title="$original_stem"
+  fi
+
+  authors="$(
+    ask_with_previous \
+      "Authors:" \
+      "$old_authors"
+  )"
+
+  paper_year="$(
+    ask_with_previous \
+      "Year:" \
+      "$old_year"
+  )"
+
+  if [[ -z "$paper_year" ]]; then
+    paper_year="$(date +%Y)"
+  fi
+
+  venue="$(
+    ask_with_previous \
+      "Venue / journal / conference:" \
+      "$old_venue"
+  )"
+
+  doi="$(
+    ask_with_previous \
+      "DOI (optional):" \
+      "$old_doi"
+  )"
+
+  # --------------------------------------------------------------
+  # Research questions
+  # --------------------------------------------------------------
+
+  echo
+  echo "-------------------- RESEARCH ANALYSIS ----------------------"
+  echo
+
+  local problem
+  local contribution
+  local project_use
+  local concepts
+  local limitations
+  local relevance
+
+  problem="$(
+    ask_with_previous \
+      "What problem does this paper solve?" \
+      "$old_problem"
+  )"
+
+  contribution="$(
+    ask_with_previous \
+      "What is the main contribution?" \
+      "$old_contribution"
+  )"
+
+  project_use="$(
+    ask_with_previous \
+      "What can I use this for in my project?" \
+      "$old_project_use"
+  )"
+
+  concepts="$(
+    ask_with_previous \
+      "What are the important concepts?" \
+      "$old_concepts"
+  )"
+
+  limitations="$(
+    ask_with_previous \
+      "What are the limitations?" \
+      "$old_limitations"
+  )"
+
+  relevance="$(
+    ask_with_previous \
+      "How relevant is this to my work? [low/medium/high]" \
+      "$old_relevance"
+  )"
+
+  relevance="${relevance,,}"
+
+  case "$relevance" in
+    low|medium|high)
+      ;;
+    *)
+      relevance="medium"
+      ;;
+  esac
+
+  # --------------------------------------------------------------
+  # Safe note filename
+  # --------------------------------------------------------------
+
+  local safe_title
+
+  safe_title="$(sanitize_filename "$title" "$original_stem")"
+
+  # --------------------------------------------------------------
+  # Keep existing filename when editing.
+  # --------------------------------------------------------------
+
+  local note
+
+  if [[ -n "$existing_note" ]]; then
+    note="$existing_note"
+  else
+    note="$VAULT_PATH/Research/Papers/$safe_title.md"
+  fi
+
+  # --------------------------------------------------------------
+  # PDF storage
+  #
+  # Organized by publication year.
+  # --------------------------------------------------------------
+
+  local dest_dir
+  local dest_pdf
+
+  dest_dir="$VAULT_PATH/PDFs/Papers/$paper_year"
+  dest_pdf="$dest_dir/$filename"
+
+  mkdir -p "$dest_dir"
+
+  if [[ "$source" == "$dest_pdf" ]]; then
+
+    echo
+    echo "PDF is already in the vault."
+
+  elif [[ -e "$dest_pdf" ]]; then
+
+    echo
+    echo "PDF already exists in the vault:"
+    echo "  PDFs/Papers/$paper_year/$filename"
+
+  else
+
+    cp "$source" "$dest_pdf"
+
+    echo
+    echo "PDF copied to:"
+    echo "  PDFs/Papers/$paper_year/$filename"
+
+  fi
+
+  # --------------------------------------------------------------
+  # PDF link
+  # --------------------------------------------------------------
+
+  local pdf_link
+
+  pdf_link="[[PDFs/Papers/$paper_year/$filename]]"
+
+  # --------------------------------------------------------------
+  # Convert concepts into path-qualified wikilinks. This keeps new
+  # concept notes out of the vault root regardless of Obsidian settings.
+  # --------------------------------------------------------------
+
+  local concept_links=""
+  local concept
+
+  if [[ -n "$concepts" ]]; then
+
+    IFS=',' read -ra concept_array <<< "$concepts"
+
+    for concept in "${concept_array[@]}"; do
+
+      concept="$(
+        printf '%s' "$concept" |
+          sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+      )"
+
+      if [[ -n "$concept" ]]; then
+
+        local concept_filename
+        local concept_path
+        concept_filename="$(sanitize_filename "$concept" "concept-$(date +%Y-%m-%d-%H%M%S)")"
+        concept_path="$VAULT_PATH/Research/Concepts/$concept_filename.md"
+
+        if [[ ! -f "$concept_path" ]]; then
+          mkdir -p "$(dirname "$concept_path")"
+          cat > "$concept_path" <<EOF
+---
+type: research
+created: $(date +%Y-%m-%d)
+updated: $(date +%Y-%m-%d)
+tags:
+  - concept
+---
+
+# $concept
+
+## What is it?
+
+## Why is it important?
+
+## How does it work?
+
+## Technical Details
+
+## Related Concepts
+
+## Related Papers
+
+## Sources
+EOF
+          echo "Created concept: Research/Concepts/$concept_filename.md"
+        fi
+
+        concept_links="${concept_links}- [[Research/Concepts/${concept_filename}|${concept}]]
+"
+
+      fi
+
+    done
+
+  fi
+
+  if [[ -z "$concept_links" ]]; then
+    concept_links="- 
+"
+  fi
+
+  # --------------------------------------------------------------
+  # YAML escaping
+  # --------------------------------------------------------------
+
+  yaml_escape() {
+    printf '%s' "$1" |
+      sed 's/\\/\\\\/g;s/"/\\"/g'
+  }
+
+  local yaml_authors
+  local yaml_year
+  local yaml_venue
+  local yaml_doi
+  local yaml_relevance
+  local yaml_contribution
+  local yaml_project_use
+  local yaml_limitations
+
+  yaml_authors="$(yaml_escape "$authors")"
+  yaml_year="$(yaml_escape "$paper_year")"
+  yaml_venue="$(yaml_escape "$venue")"
+  yaml_doi="$(yaml_escape "$doi")"
+  yaml_relevance="$(yaml_escape "$relevance")"
+  yaml_contribution="$(yaml_escape "$contribution")"
+  yaml_project_use="$(yaml_escape "$project_use")"
+  yaml_limitations="$(yaml_escape "$limitations")"
+
+  # --------------------------------------------------------------
+  # Create/update paper note
+  # --------------------------------------------------------------
+
+  cat > "$note" <<EOF
+---
+type: paper
+status: unread
+authors: "$yaml_authors"
+year: "$yaml_year"
+venue: "$yaml_venue"
+doi: "$yaml_doi"
+relevance: "$yaml_relevance"
+contribution: "$yaml_contribution"
+project_use: "$yaml_project_use"
+limitations: "$yaml_limitations"
+created: $(date +%Y-%m-%d)
+pdf: "$pdf_link"
+---
+
+# $title
+
+## Citation
+
+$authors. $title. $venue, $paper_year.
+
+## Abstract
+
+
+## Problem
+
+$problem
+
+## Main Contribution
+
+$contribution
+
+## What Can I Use This For?
+
+$project_use
+
+## Important Concepts
+
+$concept_links
+
+## Limitations
+
+$limitations
+
+## Relevance
+
+$relevance
+
+## My Notes
+
+
+## PDF
+
+$pdf_link
+EOF
+
+  python3 "$BASE_DIR/vault_ops.py" index "$VAULT_PATH" --kind papers --quiet
+
+  # --------------------------------------------------------------
+  # Final message
+  # --------------------------------------------------------------
+
+  echo
+  echo "=============================================================="
+
+  if [[ -n "$existing_note" ]]; then
+    echo "                    PAPER UPDATED"
+  else
+    echo "                     PAPER ADDED"
+  fi
+
+  echo "=============================================================="
+  echo
+
+  echo "Note:"
+  echo "  Research/Papers/$(basename "$note")"
+
+  echo
+
+  echo "PDF:"
+  echo "  PDFs/Papers/$paper_year/$filename"
+
+  echo
+
+  # --------------------------------------------------------------
+  # Open in Obsidian
+  # --------------------------------------------------------------
+
+  if command -v "$OBSIDIAN_CMD" >/dev/null 2>&1; then
+
+    "$OBSIDIAN_CMD" vault="$VAULT_NAME" \
+      open path="Research/Papers/$(basename "$note")" \
+      >/dev/null 2>&1 || true
+
+  fi
+}
+
+# ================================================================
+# Search
+# ================================================================
+
+search() {
+  require_vault
+  ensure_obsidian_running
+
+  local query="$*"
+
+  if [[ -z "$query" ]]; then
+    echo "ERROR: Search query required." >&2
+    exit 1
+  fi
+
+  "$OBSIDIAN_CMD" vault="$VAULT_NAME" search query="$query"
+}
+
+# ================================================================
+# Calendar
+# ================================================================
+
+calendar() {
+  require_vault
+
+  local PYTHON="$BASE_DIR/.venv/bin/python"
+
+  if [[ ! -x "$PYTHON" ]]; then
+    echo "ERROR: Python virtual environment not found:"
+    echo "  $BASE_DIR/.venv/bin/python"
+    echo
+    echo "Create it with:"
+    echo "  python3 -m venv $BASE_DIR/.venv"
+    exit 1
+  fi
+
+  case "${1:-}" in
+    sync)
+      shift || true
+      "$PYTHON" "$BASE_DIR/calendar_sync.py" \
+        sync --vault "$VAULT_PATH" "$@"
+      ;;
+
+    today)
+      shift || true
+      "$PYTHON" "$BASE_DIR/calendar_sync.py" \
+        today --vault "$VAULT_PATH" "$@"
+      ;;
+
+    add)
+      shift || true
+      "$PYTHON" "$BASE_DIR/calendar_sync.py" \
+        add --vault "$VAULT_PATH" "$@"
+      ;;
+
+    delete)
+      shift || true
+      if [[ $# -eq 0 ]]; then
+        echo "Usage: obs calendar delete EVENT_ID [--yes]"
+        exit 1
+      fi
+      "$PYTHON" "$BASE_DIR/calendar_sync.py" \
+        delete --vault "$VAULT_PATH" "$@"
+      ;;
+
+    *)
+      echo "Usage:"
+      echo
+      echo "  obs calendar sync"
+      echo "      Sync today's Google Calendar events into today's Daily note."
+      echo
+      echo "  obs calendar sync --date YYYY-MM-DD"
+      echo "      Sync Google Calendar events for a specific date."
+      echo
+      echo "  obs calendar today"
+      echo "      Show today's calendar events and today's tasks."
+      echo
+      echo "  obs calendar add"
+      echo "      Interactively create a Google Calendar event."
+      echo
+      echo '  obs calendar add "Title" "YYYY-MM-DD HH:MM" "YYYY-MM-DD HH:MM"'
+      echo "      Create a Google Calendar event directly."
+      echo
+      echo "  obs calendar delete EVENT_ID [--yes]"
+      echo "      Delete a Google Calendar event. Deleting a recurring"
+      echo "      event's series ID removes ALL occurrences; you'll be"
+      echo "      asked to confirm unless --yes is passed."
+      exit 1
+      ;;
+  esac
+}
+
+# ================================================================
+# Focused paper command group
+# ================================================================
+
+paper_command() {
+  case "${1:-}" in
+    new)
+      shift
+      paper "$@"
+      ;;
+    import)
+      shift
+      paper_add "$@"
+      ;;
+    show)
+      shift
+      if [[ $# -ne 0 ]]; then
+        echo "Usage: obs paper show" >&2
+        exit 1
+      fi
+      paper_show
+      ;;
+    "")
+      echo "Usage: obs paper {new|import|show}" >&2
+      exit 1
+      ;;
+    *)
+      # Preserve the original concise form: obs paper "Title".
+      paper "$@"
+      ;;
+  esac
+}
+
+# ================================================================
+
+review() {
+  if [[ "${1:-}" != "week" || $# -ne 1 ]]; then
+    echo "Usage: obs review week" >&2
+    exit 1
+  fi
+  require_vault
+  python3 "$BASE_DIR/vault_ops.py" review-week "$VAULT_PATH"
+}
+
+export_review() {
+  if [[ "${1:-}" != "week" || $# -gt 2 ]]; then
+    echo "Usage: obs export week [OUTPUT.md]" >&2
+    exit 1
+  fi
+  require_vault
+  local output="${2:-$VAULT_PATH/Exports/weekly-review-$(date +%Y-%m-%d).md}"
+  python3 "$BASE_DIR/vault_ops.py" export-week "$VAULT_PATH" "$output"
+}
+
+focus() {
+  local minutes=25
+  if [[ $# -gt 0 && "${1:-}" =~ ^[0-9]+$ ]]; then
+    minutes="$1"
+    shift
+  fi
+  if (( minutes < 1 || minutes > 240 )); then
+    echo "Focus duration must be between 1 and 240 minutes." >&2
+    exit 1
+  fi
+  require_vault
+  local daily_file="$VAULT_PATH/Daily/$(date +%Y-%m-%d).md"
+  if [[ ! -f "$daily_file" ]]; then
+    echo "No Daily note for today. Run: obs today" >&2
+    exit 1
+  fi
+  local task="${*:-Focused work}"
+  if ! python3 -c 'import tkinter' >/dev/null 2>&1; then
+    echo "ERROR: Tkinter is required for the focus window but is not installed." >&2
+    echo "Install your distribution's python3-tk package and try again." >&2
+    exit 1
+  fi
+  python3 "$BASE_DIR/focus_timer.py" \
+    --vault "$VAULT_PATH" --minutes "$minutes" --task "$task"
+}
+
+# ================================================================
+
+backup_status() {
+  require_vault
+  if ! git -C "$VAULT_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "Git backup is not initialized in this vault. Run: obs backup"
+    return
+  fi
+  local changed last_commit remote
+  changed="$(git -C "$VAULT_PATH" status --porcelain | wc -l | tr -d ' ')"
+  last_commit="$(git -C "$VAULT_PATH" log -1 --format='%h · %ad · %s' --date=short 2>/dev/null || true)"
+  echo "Vault: $VAULT_PATH"
+  echo "Uncommitted changes: $changed"
+  echo "Last backup: ${last_commit:-none}"
+  if remote="$(git -C "$VAULT_PATH" remote get-url origin 2>/dev/null)"; then
+    echo "Remote: $remote"
+  else
+    echo "Remote: not configured (backups stay local)"
+  fi
+}
+
+backup() {
+
+  if [[ "${1:-}" == "status" && $# -eq 1 ]]; then
+    backup_status
+    return
+  fi
+  if [[ $# -ne 0 ]]; then
+    echo "Usage: obs backup [status]" >&2
+    exit 1
+  fi
+
+  require_vault
+
+  cd "$VAULT_PATH"
+
+  git init -q
+
+  if [[ -z "$(git config user.email 2>/dev/null)" ]] ||
+     [[ -z "$(git config user.name 2>/dev/null)" ]]; then
+    echo "ERROR: Git user identity is not configured for this repo." >&2
+    echo "  git config --global user.name \"Your Name\"" >&2
+    echo "  git config --global user.email \"you@example.com\"" >&2
+    exit 1
+  fi
+
+  git add .
+
+  if git diff --cached --quiet; then
+
+    echo "Nothing to back up — no changes since the last backup."
+
+  else
+
+    if ! git commit -m "Vault backup $(date '+%Y-%m-%d %H:%M:%S')" >/dev/null; then
+      echo "ERROR: git commit failed. Backup was NOT saved." >&2
+      exit 1
+    fi
+
+    echo "Committed vault backup."
+
+  fi
+
+  if git remote get-url origin >/dev/null 2>&1; then
+
+    if git push; then
+      echo "Pushed to remote."
+    else
+      echo "ERROR: git push failed. Backup was committed locally but not pushed." >&2
+      exit 1
+    fi
+
+  else
+
+    echo "Local backup committed."
+    echo "No git remote configured."
+
+  fi
+}
+
+update_project() {
+  if [[ $# -ne 0 ]]; then
+    echo "Usage: obs update" >&2
+    exit 1
+  fi
+  if ! git -C "$BASE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "This installation is not a Git checkout, so it cannot update itself." >&2
+    echo "Download a newer release from the project repository instead." >&2
+    exit 1
+  fi
+  if [[ -n "$(git -C "$BASE_DIR" status --porcelain)" ]]; then
+    echo "Project has uncommitted changes; commit or stash them before updating." >&2
+    exit 1
+  fi
+  echo "Updating Obsidian Research OS..."
+  git -C "$BASE_DIR" pull --ff-only
+}
+
+# ================================================================
+# Command dispatcher
+# ================================================================
+
+# These modules deliberately load last: their portable configuration and
+# command views replace the original monolithic implementations above.
+source "$BASE_DIR/lib/obs_config.sh"
+source "$BASE_DIR/lib/obs_help.sh"
+source "$BASE_DIR/lib/obs_doctor.sh"
+
+cmd="${1:-}"
+
+shift || true
+
+case "$cmd" in
+
+  --version|version)
+    echo "obs 0.1.0"
+    ;;
+
+  focus)
+    focus "$@"
+    ;;
+
+  "")
+    usage
+    ;;
+
+  help)
+    help "$@"
+    ;;
+
+  setup)
+    setup_vault "$@"
+    ;;
+
+  config)
+    if [[ "${1:-}" != "show" || $# -ne 1 ]]; then
+      echo "Usage: obs config show" >&2
+      exit 1
+    fi
+    show_config
+    ;;
+
+  doctor)
+    if [[ $# -ne 0 ]]; then
+      echo "Usage: obs doctor" >&2
+      exit 1
+    fi
+    doctor
+    ;;
+
+  init)
+    initialize_vault
+    ;;
+
+  today)
+    today
+    ;;
+
+  morning)
+    morning
+    ;;
+
+  start)
+    morning
+    ;;
+
+  close)
+    close_day
+    ;;
+
+  task)
+    task_command "$@"
+    ;;
+
+  tasks)
+    tasks
+    ;;
+
+  index)
+    if [[ $# -ne 0 ]]; then
+      echo "Usage: obs index" >&2
+      exit 1
+    fi
+    require_vault
+    python3 "$BASE_DIR/vault_ops.py" index "$VAULT_PATH"
+    ;;
+
+  skill)
+    skill "$@"
+    ;;
+
+  capture)
+    capture "$@"
+    ;;
+
+  research)
+    research "$@"
+    ;;
+
+  concept)
+    research "$@"
+    ;;
+
+  paper)
+    paper_command "$@"
+    ;;
+
+  paper-add)
+    paper_add "$@"
+    ;;
+
+  paper-show)
+    paper_show
+    ;;
+
+  search)
+    search "$@"
+    ;;
+
+  calendar)
+    calendar "$@"
+    ;;
+
+  review)
+    review "$@"
+    ;;
+
+  export)
+    export_review "$@"
+    ;;
+
+  streak)
+    if [[ $# -ne 0 ]]; then
+      echo "Usage: obs streak" >&2
+      exit 1
+    fi
+    require_vault
+    python3 "$BASE_DIR/vault_ops.py" streak "$VAULT_PATH"
+    ;;
+
+  backup)
+    backup "$@"
+    ;;
+
+  update)
+    update_project "$@"
+    ;;
+
+  rollover)
+    rollover_tasks
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+
+esac

@@ -1,0 +1,10 @@
+[Unit]
+Description=Midnight Obsidian task rollover
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+Persistent=true
+Unit=obsidian-task-rollover.service
+
+[Install]
+WantedBy=timers.target

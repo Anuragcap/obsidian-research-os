@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Obsidian Git backup
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+Persistent=true
+Unit=obsidian-vault-backup.service
+
+[Install]
+WantedBy=timers.target
