@@ -53,6 +53,11 @@ check the command:
 obs help
 ```
 
+### macOS Installation
+
+For macOS-specific setup details (Bash upgrade, Obsidian CLI, troubleshooting), see [MACOS_INSTALL.md](MACOS_INSTALL.md).
+
+
 ### Connect your vault
 
 Pick an existing vault or a new folder. `obs setup` stores that choice in a
