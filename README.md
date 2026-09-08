@@ -37,7 +37,7 @@ available as `obsidian`.
 Clone the project anywhere you like, then link the command from that folder:
 
 ```bash
-git clone <YOUR-GITHUB-REPOSITORY-URL>
+git clone https://github.com/AbhayKabdwal/obsidian-research-os
 cd obsidian-research-os
 chmod +x bin/obs
 mkdir -p "$HOME/.local/bin"
