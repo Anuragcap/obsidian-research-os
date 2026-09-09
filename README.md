@@ -106,6 +106,7 @@ A simple first-day flow:
 obs start
 obs task add "Read the introduction"
 obs capture "Compare this idea with retrieval ranking"
+obs capture check
 obs concept "Retrieval ranking"
 obs skill typing 92 98 60s
 obs close

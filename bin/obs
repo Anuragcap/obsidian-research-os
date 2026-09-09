@@ -110,7 +110,10 @@ EOF
       echo "obs index — refresh Daily Notes.md and Paper Notes.md from the notes in the vault."
       ;;
     capture)
-      echo 'obs capture "Idea" — create and open a timestamped Inbox note.'
+      cat <<'EOF'
+obs capture "Idea" — create and open a titled Inbox note.
+obs capture check  — list all captures and flag unresolved template fields.
+EOF
       ;;
     inbox)
       echo "obs inbox review — turn each Inbox note into a task or concept, archive it, or keep it."
@@ -166,6 +169,7 @@ All commands
   obs tasks
   obs index
   obs capture "…"
+  obs capture check
   obs inbox review
   obs concept "…"
   obs paper new|import|show
@@ -535,8 +539,6 @@ pdf:
 type: inbox
 created: {{date:YYYY-MM-DD}} {{time:HH:mm}}
 ---
-
-# {{title}}
 
 {{content}}
 '
@@ -1137,8 +1139,65 @@ EOF
 # Inbox capture
 # ================================================================
 
+capture_check() {
+  require_vault
+
+  local inbox_dir="$VAULT_PATH/Inbox"
+  local -a notes=()
+  mapfile -t notes < <(find "$inbox_dir" -type f -name '*.md' -print 2>/dev/null | sort)
+
+  if [[ ${#notes[@]} -eq 0 ]]; then
+    echo "No captures found."
+    return
+  fi
+
+  local note relative placeholders issues=0
+  echo "Capture audit: ${#notes[@]} note(s)"
+  for note in "${notes[@]}"; do
+    relative="${note#"$VAULT_PATH/"}"
+    placeholders="$({ grep -Eo '\{\{[^}]+\}\}' "$note" || true; } | sort -u | paste -sd ', ' -)"
+    if [[ -n "$placeholders" ]]; then
+      echo "  ! $relative — unresolved: $placeholders"
+      issues=$((issues + 1))
+    else
+      echo "  ✓ $relative"
+    fi
+  done
+
+  if [[ $issues -eq 0 ]]; then
+    echo "All captures are complete."
+  else
+    echo "$issues capture(s) need attention."
+    return 1
+  fi
+}
+
+replace_capture_content() {
+  local note="$1"
+  local text="$2"
+  local temp
+
+  # The Obsidian CLI expands {{title}} and date fields but not custom content
+  # fields. Replace only a complete {{content}} line, preserving user templates.
+  temp="$(mktemp "${note}.tmp.XXXXXX")"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == '{{content}}' ]]; then
+      printf '%s\n' "$text"
+    else
+      printf '%s\n' "$line"
+    fi
+  done < "$note" > "$temp"
+  mv "$temp" "$note"
+}
+
 capture() {
   require_vault
+
+  if [[ "${1:-}" == "check" && $# -eq 1 ]]; then
+    capture_check
+    return
+  fi
+
   ensure_obsidian_running
 
   local text="$*"
@@ -1148,31 +1207,40 @@ capture() {
     exit 1
   fi
 
-  local title
+  local title original_title
+  title="$(sanitize_filename "$text" "Capture")"
+  title="$(printf '%s' "$title" | sed 's/[[:space:][:punct:]]*$//')"
+  original_title="$title"
 
-  title="$(
-    printf '%s' "$text" |
-      tr '[:space:]' '-' |
-      tr -cd '[:alnum:]_-' |
-      tr -s '-'
-  )"
-
-  # Cap the slug length so long captures can't produce filenames
-  # that exceed filesystem limits, then trim a trailing dash left
-  # over from truncation.
+  # A capture's filename is also Obsidian's inline title. Keep it readable and
+  # short; the created frontmatter retains the full timestamp.
   title="${title:0:60}"
-  title="${title%-}"
+  if [[ ${#original_title} -gt ${#title} && "$title" == *" "* ]]; then
+    title="${title% *}"
+  fi
 
   if [[ -z "$title" ]]; then
     title="capture"
   fi
 
+  local relative_path="Inbox/$title.md"
+  if [[ -e "$VAULT_PATH/$relative_path" ]]; then
+    relative_path="Inbox/$title-$(date +%Y-%m-%d-%H%M%S).md"
+  fi
+  local note_path="$VAULT_PATH/$relative_path"
+
   "$OBSIDIAN_CMD" vault="$VAULT_NAME" \
     create \
-    path="Inbox/$(date +%Y-%m-%d-%H%M%S)-$title.md" \
+    path="$relative_path" \
     template=Inbox \
     content="$text" \
     open
+
+  if [[ -f "$note_path" ]]; then
+    replace_capture_content "$note_path" "$text"
+  else
+    echo "WARNING: Capture was created but could not be checked for template content: $relative_path" >&2
+  fi
 }
 
 inbox() {

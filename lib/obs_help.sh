@@ -18,6 +18,7 @@ DAILY WORK
   obs task next               Show the next task (prioritizes ! tasks)
   obs focus [MINUTES] ["…"]   Run and log a focus session
   obs capture "…"             Save an idea     obs inbox review
+  obs capture check            Audit saved captures
 
 RESEARCH & LEARNING
   obs concept "…"             Make a concept note
@@ -62,7 +63,12 @@ EOF
       ;;
     tasks) echo "obs tasks — list today's open tasks with numbers." ;;
     index) echo 'obs index — rebuild Daily Notes.md and Paper Notes.md without touching your own text.' ;;
-    capture) echo 'obs capture "Idea" — create a timestamped Inbox note.' ;;
+    capture)
+      cat <<'EOF'
+obs capture "Idea" — create a titled Inbox note.
+obs capture check  — list all captures and flag unresolved template fields.
+EOF
+      ;;
     inbox) echo 'obs inbox review — turn Inbox notes into tasks or concepts, archive them, or keep them for later.' ;;
     review) echo 'obs review week — show task, research, inbox, reflection, focus, and skill progress from the last seven days. Use obs export week to save it.' ;;
     export) echo 'obs export week [OUTPUT.md] — write a shareable Markdown copy of this week’s review. Defaults to vault/Exports/.' ;;
