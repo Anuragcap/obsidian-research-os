@@ -17,8 +17,8 @@ DAILY WORK
   obs task done NUMBER        Finish a task    obs task delete NUMBER
   obs task next               Show the next task (prioritizes ! tasks)
   obs focus [MINUTES] ["…"]   Run and log a focus session
-  obs capture "…"             Save an idea     obs inbox review
-  obs capture check            Audit saved captures
+  obs capture "Title" "Content" Save an idea   obs inbox review
+  obs capture check             Update and audit captures
 
 RESEARCH & LEARNING
   obs concept "…"             Make a concept note
@@ -65,8 +65,8 @@ EOF
     index) echo 'obs index — rebuild Daily Notes.md and Paper Notes.md without touching your own text.' ;;
     capture)
       cat <<'EOF'
-obs capture "Idea" — create a titled Inbox note.
-obs capture check  — list all captures and flag unresolved template fields.
+obs capture "Title" "Content" — create a titled Inbox note.
+obs capture check             — update the capture index and audit captures.
 EOF
       ;;
     inbox) echo 'obs inbox review — turn Inbox notes into tasks or concepts, archive them, or keep them for later.' ;;

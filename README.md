@@ -105,7 +105,7 @@ A simple first-day flow:
 ```bash
 obs start
 obs task add "Read the introduction"
-obs capture "Compare this idea with retrieval ranking"
+obs capture "Retrieval ranking" "Compare this idea with retrieval ranking"
 obs capture check
 obs concept "Retrieval ranking"
 obs skill typing 92 98 60s
@@ -121,7 +121,7 @@ obs init                          Create folders, templates, and indexes
 obs today | obs start | obs close Work with today’s note
 
 obs task add "…" | done N | delete N | next | obs tasks
-obs capture "…" | obs inbox review
+obs capture "Title" "Content" | obs inbox review
 obs concept "…" | obs paper new|import|show
 obs skill chess|typing|note
 obs review week | obs streak | obs index | obs backup

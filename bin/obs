@@ -111,8 +111,8 @@ EOF
       ;;
     capture)
       cat <<'EOF'
-obs capture "Idea" — create and open a titled Inbox note.
-obs capture check  — list all captures and flag unresolved template fields.
+obs capture "Title" "Content" — create and open an Inbox note.
+obs capture check             — update the capture index and audit captures.
 EOF
       ;;
     inbox)
@@ -168,7 +168,7 @@ All commands
   obs task delete NUMBER
   obs tasks
   obs index
-  obs capture "…"
+  obs capture "Title" "Content"
   obs capture check
   obs inbox review
   obs concept "…"
@@ -1144,7 +1144,9 @@ capture_check() {
 
   local inbox_dir="$VAULT_PATH/Inbox"
   local -a notes=()
-  mapfile -t notes < <(find "$inbox_dir" -type f -name '*.md' -print 2>/dev/null | sort)
+  mapfile -t notes < <(find "$inbox_dir" -type f -name '*.md' ! -name 'Captures.md' -print 2>/dev/null | sort)
+
+  refresh_capture_index --quiet
 
   if [[ ${#notes[@]} -eq 0 ]]; then
     echo "No captures found."
@@ -1169,6 +1171,34 @@ capture_check() {
   else
     echo "$issues capture(s) need attention."
     return 1
+  fi
+}
+
+refresh_capture_index() {
+  local quiet="${1:-}"
+  local inbox_dir="$VAULT_PATH/Inbox"
+  local index_path="$inbox_dir/Captures.md"
+  local -a notes=()
+  mapfile -t notes < <(find "$inbox_dir" -type f -name '*.md' ! -name 'Captures.md' -print 2>/dev/null | sort)
+
+  mkdir -p "$inbox_dir"
+  {
+    printf '%s\n\n' '# Captures'
+    printf '%s\n\n' '> This index is updated automatically by `obs capture`.'
+    if [[ ${#notes[@]} -eq 0 ]]; then
+      printf '%s\n' '_No captures yet._'
+    else
+      local note relative title
+      for note in "${notes[@]}"; do
+        relative="${note#"$VAULT_PATH/"}"
+        title="$(basename "$note" .md)"
+        printf '%s\n' "- [[${relative%.md}|$title]]"
+      done
+    fi
+  } > "$index_path"
+
+  if [[ "$quiet" != "--quiet" ]]; then
+    echo "Updated: Inbox/Captures.md"
   fi
 }
 
@@ -1198,26 +1228,28 @@ capture() {
     return
   fi
 
-  ensure_obsidian_running
-
-  local text="$*"
-
-  if [[ -z "$text" ]]; then
-    echo "ERROR: Capture text required." >&2
+  if [[ $# -ne 2 ]]; then
+    echo 'Usage: obs capture "Title" "Content"' >&2
     exit 1
   fi
 
-  local title original_title
-  title="$(sanitize_filename "$text" "Capture")"
+  local input_title="$1"
+  local text="$2"
+
+  if [[ -z "$input_title" || -z "$text" ]]; then
+    echo "ERROR: Capture title and content are required." >&2
+    exit 1
+  fi
+
+  ensure_obsidian_running
+
+  local title
+  title="$(sanitize_filename "$input_title" "Capture")"
   title="$(printf '%s' "$title" | sed 's/[[:space:][:punct:]]*$//')"
-  original_title="$title"
 
   # A capture's filename is also Obsidian's inline title. Keep it readable and
-  # short; the created frontmatter retains the full timestamp.
-  title="${title:0:60}"
-  if [[ ${#original_title} -gt ${#title} && "$title" == *" "* ]]; then
-    title="${title% *}"
-  fi
+  # short; users supply it separately from the capture body.
+  title="${title:0:80}"
 
   if [[ -z "$title" ]]; then
     title="capture"
@@ -1238,6 +1270,7 @@ capture() {
 
   if [[ -f "$note_path" ]]; then
     replace_capture_content "$note_path" "$text"
+    refresh_capture_index
   else
     echo "WARNING: Capture was created but could not be checked for template content: $relative_path" >&2
   fi
